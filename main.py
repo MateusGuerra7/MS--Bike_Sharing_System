@@ -5,7 +5,10 @@ from matplotlib.patches import Patch
 from matplotlib.lines import Line2D
 from matplotlib.animation import FuncAnimation
 import mesa  # Mesa 3.x
+from dataclasses import dataclass
+from enum import Enum, auto
 
+#mapa
 ROAD, BLOCK = 0, 1
 
 GREY, GREEN, RED = "#888888", "#2ca02c", "#d62728"
@@ -18,6 +21,7 @@ ZONES = {
     "residencial": {"color": "#a8d5a2", "generation": 2.0, "attraction": 0.8},
 }
 
+#substituir por distribuição
 def demand_factor(hour):
     """Multiplicador da taxa de chegada ao longo do dia."""
     if 7 <= hour <= 9 or 17 <= hour <= 19:
@@ -52,38 +56,177 @@ def build_city(n_blocks_x=5, n_blocks_y=4, block_size=6, road_width=2):
     return city, blocks
 
 
-class BikeStation(mesa.Agent):
-    """Estação de bicicletas fixa numa célula de estrada."""
+BATTERY_CONSUMPTION_RATE = 1
+@dataclass
+class Position:
+    x: int
+    y: int
 
-    def __init__(self, model, xy, capacity, bikes, zone):
+class StationState(Enum):
+    FULL = auto()   
+    AVAILABLE = auto()             
+
+class PersonState(Enum):
+    WALKING_TO_ORIGIN = auto()   
+    WAITING = auto()             
+    RIDING = auto()              
+    WALKING_TO_DEST = auto()        
+    #satisfied
+    #rerouting's    
+    BALKED = auto()     
+
+STATE_COLORS = {
+    PersonState.WALKING_TO_ORIGIN: GREY,
+    PersonState.WAITING: GREY,
+    PersonState.RIDING: GREEN,
+    PersonState.WALKING_TO_DEST: GREY,
+    PersonState.BALKED: RED,
+}
+         
+class BikeStation(mesa.Agent):
+    def __init__(self, model, position, zone_type, capacity, occupied_docks):
         super().__init__(model)
-        self.xy = xy
-        self.zone = zone           # nome da zona onde está a estação
-        self.capacity = capacity   # nº total de docas
-        self.bikes = bikes         # bicicletas atualmente na estação
+        self.position = position
+        self.capacity = capacity
+        self.zone_type = zone_type
+        self.occupied_docks = occupied_docks #passar para list e currentoad ser len(list)
 
     @property
     def free_docks(self):
-        return self.capacity - self.bikes
+        return self.capacity - self.occupied_docks
+
+    @property
+    def state(self):
+        return StationState.FULL if self.occupied_docks == self.capacity else StationState.AVAILABLE
 
     @property
     def fill_ratio(self):
-        return self.bikes / self.capacity
+        return self.occupied_docks / self.capacity
 
     def take_bike(self):
-        """True se havia bicicleta (senão: procura não satisfeita)."""
-        if self.bikes > 0:
-            self.bikes -= 1
+        if self.occupied_docks > 0:
+            self.occupied_docks -= 1
             return True
         return False
 
     def return_bike(self):
-        """True se havia doca livre (senão: estação cheia)."""
         if self.free_docks > 0:
-            self.bikes += 1
+            self.occupied_docks += 1
             return True
         return False
 
+class Bike(mesa.Agent):
+    def __init__(self, model, position, battery):
+        super().__init__(model)
+        self.position = position
+        self.battery = battery
+
+    def use(self, distance):
+        self.battery = max(0.0, self.battery - distance * BATTERY_CONSUMPTION_RATE)
+
+
+class RebalancingVans(mesa.Agent):
+    def __init__(self, model, position, max_capacity, current_load):
+        super().__init__(model)
+        self.position = position
+        self.max_capacity = max_capacity
+        self.current_load = current_load  #passar para list e currentoad ser len(list)
+
+    @property
+    def free_space(self):
+        return self.max_capacity - len(self.load)
+
+    def pick_up(self, station, n):
+        n = min(n, self.free_space, station.bikes)
+        station.bikes -= n
+        self.current_load += n
+        return n
+
+    def drop_off(self, station, n):
+        n = min(n, self.current_load, station.free_docks)
+        station.bikes += n
+        self.current_load -= n
+        return n
+
+        #policy rebalancing
+
+
+
+class Person(mesa.Agent):
+
+    def __init__(self, model, origin, dest, o_station, d_station, patience):
+        super().__init__(model)
+        self.origin = origin
+        self.dest = dest
+        self.o_station = o_station
+        self.d_station = d_station
+        self.patience_threshold = patience
+        self.walking_distance = 0.0
+        self.waiting_time = 0
+        self.state = PersonState.WALKING_TO_ORIGIN
+    """
+        self.start_leg(origin, o_station.xy, model.walk_time(origin, o_station.xy))
+
+    def start_leg(self, a, b, minutes):
+        self.leg_from, self.leg_to = a, b
+        self.timer = self.leg_total = max(1, minutes)
+
+    @property
+    def xy(self):
+        f = min(max(1 - self.timer / self.leg_total, 0), 1)
+        return (self.leg_from[0] + (self.leg_to[0] - self.leg_from[0]) * f,
+                self.leg_from[1] + (self.leg_to[1] - self.leg_from[1]) * f)
+
+    @property
+    def color(self): 
+        return STATE_COLORS[self.state]
+    
+    def step(self):
+        self.timer -= 1
+        if self.timer > 0:
+            return
+        m = self.model
+
+        if self.state == "walking_to_start":
+            if self.o_station.take_bike():
+                self.state = "riding"
+                self.start_leg(self.o_station.xy, self.d_station.xy,
+                               m.ride_time(self.o_station.xy, self.d_station.xy))
+            else:                     
+                m.unmet += 1
+                m.unmet_by_zone[self.o_zone] += 1
+                m.add_flash(self.o_station.xy, RED)
+                self.remove()
+
+        elif self.state == "riding":
+            if self.d_station.return_bike():
+                self.finish(self.d_station)
+            else:                      
+                m.redirects += 1
+                alt = m.nearest_station(self.d_station.xy,
+                                        lambda s: s.free_docks > 0)
+                if alt is None:
+                    m.failed_returns += 1
+                    m.add_flash(self.d_station.xy, RED)
+                    self.remove()
+                else:
+                    self.start_leg(self.d_station.xy, alt.xy,
+                                   m.ride_time(self.d_station.xy, alt.xy))
+                    self.d_station = alt
+
+        elif self.state == "walking_to_dest":
+            m.served += 1
+            m.add_flash(self.dest, GREEN)
+            self.remove()
+
+    def finish(self, station):
+        self.state = "walking_to_dest"
+        self.start_leg(station.xy, self.dest,
+                       self.model.walk_time(station.xy, self.dest))
+        self.model.walk_minutes += self.leg_total
+    """
+
+#events
 class BikeSharingModel(mesa.Model):
     def __init__(self, n_blocks_x=7, n_blocks_y=6, block_size=5,
                  road_width=2, n_stations=7, min_dist=10,
@@ -247,7 +390,7 @@ class BikeSharingModel(mesa.Model):
                 continue
 
             self.walk_minutes += self.walk_time(origin, o_st.xy)
-            User(self, origin, dest, o_st, d_st, o_zone)
+            Person(self, origin, dest, o_st, d_st, o_zone)
 
 
     def add_flash(self, xy, color, ttl=5):
@@ -261,7 +404,7 @@ class BikeSharingModel(mesa.Model):
     def step(self):
         self.tick_flashes()
         self.spawn_users()
-        self.agents_by_type[User].do("step") if User in self.agents_by_type else None
+        self.agents_by_type[Person].do("step") if Person in self.agents_by_type else None
         self.datacollector.collect(self)
     # ---------- desenho ----------
     def draw(self, ax=None):
@@ -273,7 +416,7 @@ class BikeSharingModel(mesa.Model):
         ax.imshow(self.zone_map + 1, cmap=ListedColormap(colors),
                   vmin=0, vmax=len(ZONE_NAMES), origin="lower")
 
-        users = [u for u in self.agents if isinstance(u, User)]
+        users = [u for u in self.agents if isinstance(u, Person)]
         if users:
             pos = [u.xy for u in users]
             ax.scatter([p[0] for p in pos], [p[1] for p in pos], s=22,
@@ -305,77 +448,6 @@ class BikeSharingModel(mesa.Model):
         ax.set_xticks([]); ax.set_yticks([])
         return ax
 
-class User(mesa.Agent):
-    """Uma viagem: caminha -> pedala -> caminha."""
-
-    def __init__(self, model, origin, dest, o_station, d_station, o_zone):
-        super().__init__(model)
-        self.dest = dest
-        self.o_station = o_station
-        self.d_station = d_station
-        self.o_zone = o_zone
-        self.state = "walking_to_start"
-        self.start_leg(origin, o_station.xy, model.walk_time(origin, o_station.xy))
-
-    def start_leg(self, a, b, minutes):
-        """Começa um troço de a para b que demora 'minutes'."""
-        self.leg_from, self.leg_to = a, b
-        self.timer = self.leg_total = max(1, minutes)
-
-    @property
-    def xy(self):
-        """Posição interpolada ao longo do troço atual."""
-        f = min(max(1 - self.timer / self.leg_total, 0), 1)
-        return (self.leg_from[0] + (self.leg_to[0] - self.leg_from[0]) * f,
-                self.leg_from[1] + (self.leg_to[1] - self.leg_from[1]) * f)
-
-    @property
-    def color(self):
-        return GREEN if self.state == "riding" else GREY
-
-    def step(self):
-        self.timer -= 1
-        if self.timer > 0:
-            return
-        m = self.model
-
-        if self.state == "walking_to_start":
-            if self.o_station.take_bike():
-                self.state = "riding"
-                self.start_leg(self.o_station.xy, self.d_station.xy,
-                               m.ride_time(self.o_station.xy, self.d_station.xy))
-            else:                      # alguém levou a última bicicleta
-                m.unmet += 1
-                m.unmet_by_zone[self.o_zone] += 1
-                m.add_flash(self.o_station.xy, RED)
-                self.remove()
-
-        elif self.state == "riding":
-            if self.d_station.return_bike():
-                self.finish(self.d_station)
-            else:                      # estação cheia: procura outra
-                m.redirects += 1
-                alt = m.nearest_station(self.d_station.xy,
-                                        lambda s: s.free_docks > 0)
-                if alt is None:
-                    m.failed_returns += 1
-                    m.add_flash(self.d_station.xy, RED)
-                    self.remove()
-                else:
-                    self.start_leg(self.d_station.xy, alt.xy,
-                                   m.ride_time(self.d_station.xy, alt.xy))
-                    self.d_station = alt
-
-        elif self.state == "walking_to_dest":
-            m.served += 1
-            m.add_flash(self.dest, GREEN)
-            self.remove()
-
-    def finish(self, station):
-        self.state = "walking_to_dest"
-        self.start_leg(station.xy, self.dest,
-                       self.model.walk_time(station.xy, self.dest))
-        self.model.walk_minutes += self.leg_total
 
 def animate(model, minutes_per_frame=1, interval_ms=100):
     fig, ax = plt.subplots(figsize=(11, 6))

@@ -1,4 +1,4 @@
-## Installation
+## How to build
 
 Create a Python virtual environment:
 
