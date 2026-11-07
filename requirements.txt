@@ -1,4 +1,6 @@
 numpy
 matplotlib
 mesa
+solara
+altair
 networkx
