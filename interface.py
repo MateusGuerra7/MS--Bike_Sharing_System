@@ -10,47 +10,15 @@ import mesa
 from matplotlib.figure import Figure
 from matplotlib.patches import Patch
 from matplotlib.lines import Line2D
+from model import BikeSharingModel
 
 from space import (
-    CityRoadGrid,
-    GRID_WIDTH,
-    GRID_HEIGHT,
     ZONE_CENTRAL,
     ZONE_UNIVERSITY,
     ZONE_RESIDENTIAL,
     ZONE_COLORS,
     COLOR_ROAD,
 )
-
-
-class BikeSharingModel(mesa.Model):
-    """Central simulation coordinator"""
-
-    def __init__(self, seed: Optional[int] = 42):
-        super().__init__(seed=seed)
-        self.width = GRID_WIDTH
-        self.height = GRID_HEIGHT
-        self.running = True
-
-        # Initializing Grid
-        self.grid = CityRoadGrid(width=self.width, height=self.height)
-
-        # Clock (07:00 to 19:00, 720 mins)
-        self.current_tick = 0
-        self.shift_ticks = 720
-
-        # Station, bike, and van entities will be plugged in here
-        self.stations = []
-        self.bikes = []
-        self.vans = []
-
-    def step(self):
-        """1-minute simulation step"""
-        if self.current_tick < self.shift_ticks:
-            self.current_tick += 1
-            if self.current_tick >= self.shift_ticks:
-                self.running = False
-
 
 @solara.component
 def MapView(model, tick: int = 0):
@@ -214,7 +182,6 @@ model_params = {
 
 model = BikeSharingModel()
 
-# Dashboard instance (solara run main.py)
 page = SolaraViz(
     model=model,
     components=[MapView],

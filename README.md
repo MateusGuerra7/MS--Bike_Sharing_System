@@ -29,5 +29,5 @@ source .venv/bin/activate
 Then run the application:
 
 ```bash
-python3 main.py
+solara run interface.py
 ```

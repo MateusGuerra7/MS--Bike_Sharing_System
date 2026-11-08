@@ -7,13 +7,9 @@ import random
 from typing import Dict, List, Optional, Set, Tuple
 import numpy as np
 from mesa.space import MultiGrid
+from constants import GRID_WIDTH, GRID_HEIGHT, ROAD_INTERVAL, BLOCK_SIZE
 
-# Grid Dimensions
-GRID_WIDTH = 37
-GRID_HEIGHT = 37
-ROAD_INTERVAL = 4
-BLOCK_SIZE = 3
-
+#passar o resto para constants
 # Zones
 ZONE_CENTRAL = "CENTRAL"
 ZONE_UNIVERSITY = "UNIVERSITY"
@@ -29,7 +25,6 @@ ZONE_COLORS = {
 
 COLOR_ROAD = "#e0e0e0"
 COLOR_INTERSECTION = "#9e9e9e"
-
 
 def is_road(x: int, y: int) -> bool:
     """Returns True if the coordinate lies on a road corridor."""
@@ -62,8 +57,6 @@ def get_zone_at(x: int, y: int) -> str:
 
     # Residential (Paranhos, Ramalde, Bonfim, Prelada, Foz)
     return ZONE_RESIDENTIAL
-
-
 class CityRoadGrid(MultiGrid):
     """Porto Spatial Road Network with Cardinal Zoning."""
 
@@ -121,7 +114,6 @@ class CityRoadGrid(MultiGrid):
 
     # NOTE: until here, the methods and functions were solely to define the grid
     # NOTE: from here, the methods and functions are to be used when modelling the behaviour of agents 
-
 
     def get_road_neighbors(self, pos: Tuple[int, int]) -> List[Tuple[int, int]]:
         """For an agent, answers: what are the next possible cells (up, down, left, right)?"""
