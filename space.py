@@ -30,16 +30,13 @@ def is_road(x: int, y: int) -> bool:
     """Returns True if the coordinate lies on a road corridor."""
     return 0 <= x < GRID_WIDTH and 0 <= y < GRID_HEIGHT and ((x % ROAD_INTERVAL == 0) or (y % ROAD_INTERVAL == 0))
 
-
 def is_intersection(x: int, y: int) -> bool:
     """Returns True if the coordinate is a road intersection (station / depot anchor)."""
     return 0 <= x < GRID_WIDTH and 0 <= y < GRID_HEIGHT and (x % ROAD_INTERVAL == 0) and (y % ROAD_INTERVAL == 0)
 
-
 def is_block(x: int, y: int) -> bool:
     """Returns True if the coordinate is an interior building block parcel."""
     return 0 <= x < GRID_WIDTH and 0 <= y < GRID_HEIGHT and not is_road(x, y)
-
 
 def get_zone_at(x: int, y: int) -> str:
     """Returns the urban zone for any coordinate on the grid."""

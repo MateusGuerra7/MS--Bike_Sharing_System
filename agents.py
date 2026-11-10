@@ -8,11 +8,11 @@ class StationState(Enum):
     AVAILABLE = auto()             
 
 class PersonState(Enum):
-    WAITING_TO_START = auto()
+    IDLE_UNSPAWNED = auto()
     WALKING_TO_ORIGIN = auto()   
     WAITING_AT_STATION = auto()             
     RIDING = auto()        
-    REROUTING_WALKING = auto()
+    REROUTING_RIDING = auto()
     WALKING_TO_DEST = auto()      
     #rerouting bike?, satisfied   
     BALKED = auto()     
@@ -21,12 +21,12 @@ GREY, GREEN, RED = "#888888", "#2ca02c", "#d62728" #provosorio
 
 #provosorio
 STATE_COLORS = {
-    PersonState.WAITING_TO_START: GREY,
+    PersonState.IDLE_UNSPAWNED: GREY,
     PersonState.WALKING_TO_ORIGIN: GREY,
     PersonState.WAITING_AT_STATION: GREY,
     PersonState.RIDING: GREEN,
-    PersonState.REROUTING_WALKING: GREY,
-    PersonState.WALKING_TO_DEST: GREEN,
+    PersonState.REROUTING_RIDING: GREY,
+    PersonState.WALKING_TO_DEST: GREEN, #satisfied
     PersonState.BALKED: RED,
 }
          
@@ -78,17 +78,17 @@ class RebalancingVans(mesa.Agent):
 
     @property
     def free_space(self):
-        return self.max_capacity - len(self.current_load)
+        return self.max_capacity - self.current_load
 
     def pick_up(self, station, n):
-        n = min(n, self.free_space, station.caoacity)
-        station.capacity -= n
+        n = min(n, self.free_space, station.capacity)
+        station.occupied_docks -= n
         self.current_load += n
         return n
 
     def drop_off(self, station, n):
         n = min(n, self.current_load, station.free_docks)
-        station.bikes += n
+        station.occupied_docks += n
         self.current_load -= n
         return n
 
@@ -105,7 +105,7 @@ class Person(mesa.Agent):
         self.patience_threshold = patience_threshold
         self.walking_distance = 0.0
         self.waiting_time = 0
-        self.state = PersonState.WAITING_TO_START #?
+        self.state = PersonState.IDLE_UNSPAWNED 
         self.timer = timer 
 
     @property
@@ -117,6 +117,7 @@ class Person(mesa.Agent):
         return {
             PersonState.WALKING_TO_ORIGIN: self.o_station.pos,
             PersonState.RIDING: self.d_station.pos,
+            PersonState.REROUTING_RIDING: self.d_station.pos, #?
             PersonState.WALKING_TO_DEST: self.dest,
         }.get(self.state)
 
@@ -132,10 +133,10 @@ class Person(mesa.Agent):
         return True
       
     def step(self):
-        model = self.model
         match self.state:
-            case PersonState.WAITING_TO_START:
-                self.state = PersonState.WALKING_TO_ORIGIN #?
+            case PersonState.IDLE_UNSPAWNED:
+                #function
+                self.state = PersonState.WALKING_TO_ORIGIN 
             case PersonState.WALKING_TO_ORIGIN:
                 if self._step(self.target):
                     if self.o_station.take_bike():
@@ -146,19 +147,18 @@ class Person(mesa.Agent):
                 if self.o_station.take_bike():
                     self.state = PersonState.RIDING
                 else:
-                    #rerouting?
                     self.waiting_time += 1
                     if self.waiting_time >= self.patience_threshold:
                         self.state = PersonState.BALKED
                         #balked +=1
-            case PersonState.RIDING:
+            case PersonState.RIDING: #falta recompensa
                 if self._step(self.target):
                     if self.d_station.return_bike():
                         self.state = PersonState.WALKING_TO_DEST
                     else:   
                         #waiting?
-                        self.state = PersonState.REROUTING_WALKING
-            case PersonState.REROUTING_WALKING:
+                        self.state = PersonState.REROUTING_RIDING
+            case PersonState.REROUTING_RIDING:
                 if self._step(self.target):
                     if self.d_station.return_bike():
                         self.state = PersonState.WALKING_TO_DEST
