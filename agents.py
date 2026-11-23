@@ -12,9 +12,8 @@ class PersonState(Enum):
     WALKING_TO_ORIGIN = auto()   
     WAITING_AT_STATION = auto()             
     RIDING = auto()        
-    REROUTING_WALKING = auto()
+    REROUTING_BIKING = auto()
     WALKING_TO_DEST = auto()      
-    #rerouting bike?, satisfied   
     BALKED = auto()     
 
 GREY, GREEN, RED = "#888888", "#2ca02c", "#d62728" #provosorio
@@ -25,7 +24,7 @@ STATE_COLORS = {
     PersonState.WALKING_TO_ORIGIN: GREY,
     PersonState.WAITING_AT_STATION: GREY,
     PersonState.RIDING: GREEN,
-    PersonState.REROUTING_WALKING: GREY,
+    PersonState.REROUTING_BIKING: GREEN,
     PersonState.WALKING_TO_DEST: GREEN,
     PersonState.BALKED: RED,
 }
@@ -104,6 +103,8 @@ class Person(mesa.Agent):
         self.d_station = d_station
         self.patience_threshold = patience_threshold
         self.walking_distance = 0.0
+        self.excess_access_walk = 0.0
+        self.involuntary_detour_bike = 0.0
         self.waiting_time = 0
         self.state = PersonState.WAITING_TO_START #?
         self.timer = timer 
@@ -117,12 +118,13 @@ class Person(mesa.Agent):
         return {
             PersonState.WALKING_TO_ORIGIN: self.o_station.pos,
             PersonState.RIDING: self.d_station.pos,
+            PersonState.REROUTING_BIKING: self.d_station.pos,
             PersonState.WALKING_TO_DEST: self.dest,
         }.get(self.state)
 
     @property
     def speed(self):
-        return CYCLING_SPEED if self.state == PersonState.RIDING else WALKING_SPEED
+        return CYCLING_SPEED if self.state in (PersonState.RIDING, PersonState.REROUTING_BIKING) else WALKING_SPEED
 
     #refactor
     def _step(self, target):
@@ -156,14 +158,14 @@ class Person(mesa.Agent):
                     if self.d_station.return_bike():
                         self.state = PersonState.WALKING_TO_DEST
                     else:   
-                        #waiting?
-                        self.state = PersonState.REROUTING_WALKING
-            case PersonState.REROUTING_WALKING:
+                        # Doca de destino cheia: muda para REROUTING_BIKING
+                        self.state = PersonState.REROUTING_BIKING
+            case PersonState.REROUTING_BIKING:
                 if self._step(self.target):
                     if self.d_station.return_bike():
                         self.state = PersonState.WALKING_TO_DEST
                     else:
-                        #rerouting usar func de mais perto
+                        # Se a alternativa também estiver cheia
                         self.state = PersonState.BALKED
                         #balked +=1
             case PersonState.WALKING_TO_DEST:             

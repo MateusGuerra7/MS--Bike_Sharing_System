@@ -27,17 +27,23 @@ The objective is to minimize total unmet commuter demand across a 12-hour shift 
 
 #### Objective Function:
 ```
-Minimize Total Unmet Demand (Z) across the 720-minute shift:
+Minimize Total System Dissatisfaction / Unmet Demand (Z) across the 720-minute shift:
 
   Z = Sum of all minutes (t = 1 to 720) of:
         Origin Balks(t)
-      + (0.5 × Detour Walking Blocks(t))
+      + (0.5 × Excess Access Walk Blocks(t))
+      + (0.5 × Involuntary Detour Cycling Blocks(t))
       + (0.2 × Waiting Minutes(t))
 ```
 
 Where:
-* `Origin Balks(t)`: Count of commuters who find no available, charged bike within `R_walk` (3 blocks) and immediately balk.
-* `Detour Walking Blocks(t)`: Excess walking blocks imposed on cyclists when their target destination station is full (weighted by `gamma_walk = 0.5`, meaning 2 excess detour blocks equal 1 unmet trip unit).
+* `Origin Balks(t)`: Count of commuters who find no available, charged bike within `R_walk` (3 blocks) and immediately balk (weight = 1.0).
+* `Excess Access Walk Blocks(t)`: Additional blocks walked on foot by commuters when their nearest station is empty and they must walk to a 2nd or 3rd station option:
+  $$\Delta d_{\text{access}}(p) = \text{dist}(\text{origin}_p, s^*) - \text{dist}(\text{origin}_p, s_{\text{closest}})$$
+  (If the nearest station has an available bike, $\Delta d_{\text{access}} = 0$. Weighted by `gamma_access = 0.5`).
+* `Involuntary Detour Cycling Blocks(t)`: Additional blocks cycled by riders when their target destination station is saturated (`occupied_docks == capacity`), forcing them to divert to an alternative dock:
+  $$d_{\text{involuntary\_detour}}(p) = \text{dist}(s_{\text{dest}}, s_{\text{alt}})$$
+  **Incentive Neutrality Rule:** If a cyclist diverts because they **accepted an incentive reward** (voluntary choice), this does **NOT** penalize satisfaction ($d_{\text{involuntary\_detour}} = 0$). Only forced rejections due to full docks generate a penalty (weighted by `gamma_detour = 0.5`).
 * `Waiting Minutes(t)`: Accumulated wait time of commuters waiting at empty docks before a bike arrives (weighted by `gamma_wait = 0.2`, meaning 5 minutes waiting equal 1 unmet trip unit).
 
 #### System Constraints:
@@ -65,10 +71,12 @@ Where:
   * `origin_coord`, `dest_coord` (`Tuple[int, int]`): Continuous/grid coordinates of spawn and target.
   * `assigned_origin_station_id`, `assigned_dest_station_id` (`int`): Selected stations.
   * `current_bike` (`Optional[Bike]`): Pointer to checked out bicycle instance while riding (`None` otherwise).
-  * `walking_distance` (`float`): Accumulated walking distance (access walk + detour walk).
+  * `walking_distance` (`float`): Accumulated access walking distance from spawn to origin dock.
+  * `excess_access_walk` (`float`): Extra walking distance if forced to use a 2nd/3rd station option instead of the closest station.
+  * `involuntary_detour_bike` (`float`): Extra cycling distance caused by a saturated destination dock (0 if diversion was due to a voluntary incentive).
   * `waiting_time` (`int`): Accumulated ticks spent waiting at an empty origin station.
   * `patience_threshold` (`int`): Maximum waiting tolerance (default: 5 ticks/minutes).
-  * `state` (`CommuterState` Enum): `IDLE_UNSPAWNED`, `WALKING_TO_ORIGIN`, `WAITING_AT_STATION`, `RIDING`, `REROUTING_WALKING`, `SATISFIED`, `BALKED`.
+  * `state` (`CommuterState` Enum): `IDLE_UNSPAWNED`, `WALKING_TO_ORIGIN`, `WAITING_AT_STATION`, `RIDING`, `REROUTING_BIKING`, `SATISFIED`, `BALKED`.
 * **Rebalancing Vans:**
   * `id` (`int`): Unique vehicle identifier (2 vans deployed).
   * `position_coord` (`Tuple[int, int]`): Current location on the road network (initializes at depot `(16, 16)`).
@@ -142,10 +150,10 @@ stateDiagram-v2
     
     RIDING --> DestCheck: Arrive near destination s_dest
     state DestCheck <<choice>>
-    DestCheck --> REROUTING_WALKING: Accept Incentive OR s_dest Full
+    DestCheck --> REROUTING_BIKING: Accept Incentive OR s_dest Full
     DestCheck --> SATISFIED: Dock available at s_dest (Return)
     
-    REROUTING_WALKING --> SATISFIED: Arrive and dock at s_alt
+    REROUTING_BIKING --> SATISFIED: Arrive and dock at s_alt
     
     SATISFIED --> [*]
     BALKED --> [*]
@@ -189,16 +197,25 @@ Spawned commuters sample their destination zone from diurnal transition matrices
 
 ### 3.3 App-Assisted Origin Selection & Balking
 1. Commuter queries all stations within `R_walk = 3` blocks that have at least 1 bike with `battery_soc >= 20%`.
-2. **Greedy Choice:** Selects the nearest station with an available bike (ties broken by proximity to destination).
+2. **Greedy Choice & Access Friction:** Selects the nearest qualified station $s^*$ with an available bike (ties broken by proximity to destination).
+   * If $s^*$ is the physically closest station to the spawn point ($s^* == s_{\text{closest}}$), excess walking is zero ($\Delta d_{\text{access}} = 0$).
+   * If the closest station is starved ($B_{s_{\text{closest}}} == 0$), forcing the commuter to walk to a 2nd or 3rd station option, the commuter logs an excess walking penalty:
+     $$\Delta d_{\text{access}} = \text{dist}(\text{origin}, s^*) - \text{dist}(\text{origin}, s_{\text{closest}})$$
 3. **Immediate App Balk:** If no qualified station exists within 3 blocks, the commuter logs an unmet demand balk and immediately exits without walking.
 4. **Waiting at Origin:** If bikes are taken during the access walk, the commuter waits up to 5 ticks. If a bike is returned, they unlock it; otherwise, they balk after 5 minutes.
 
 ---
 
-### 3.4 Incentive Acceptance Decision
-When approaching destination `s_dest`, if an incentive credit is offered to divert to alternative station `s_alt`:
-* **Detour Cutoff:** Commuters refuse any detour greater than 2 blocks (`max_detour = 2`).
-* **Acceptance Rule:** If detour is <= 2 blocks, commuter accepts with **70% probability** for the standard 0.25 EUR credit. For higher rewards, acceptance scales linearly up to **85%**.
+### 3.4 Destination Arrival, Involuntary Detours & Incentives
+When approaching destination `s_dest`:
+* **Case A: Docks Available at $s_{\text{dest}}$ & No Incentive:** The commuter docks the bicycle at $s_{\text{dest}}$ and transitions to `SATISFIED`.
+* **Case B: Destination Saturated ($s_{\text{dest}}$ Full):** The cyclist experiences an involuntary rejection, transitions to `REROUTING_BIKING`, and cycles to the nearest alternative station $s_{\text{alt}}$ with open berths. This imposes an **involuntary cycling detour**:
+  $$d_{\text{involuntary\_detour}} = \text{dist}(s_{\text{dest}}, s_{\text{alt}})$$
+  which directly degrades system performance in the objective function.
+* **Case C: Incentive Offer Accepted (Voluntary Crowdsourcing):** If an incentive credit is offered to divert to a starved station $s_{\text{alt}}$:
+  * **Detour Cutoff:** Commuters refuse any cycling detour greater than 2 blocks (`max_detour = 2`).
+  * **Acceptance Rule:** If detour is <= 2 blocks, commuter accepts with **70% probability** for the standard 0.25 EUR credit (scaling up to 85% for higher rewards).
+  * **Incentive Neutrality Rule:** If accepted, the rider transitions to `REROUTING_BIKING` and docks at $s_{\text{alt}}$. Because this diversion was **voluntarily compensated**, it generates **zero dissatisfaction penalty** ($d_{\text{involuntary\_detour}} = 0$).
 
 ---
 
@@ -247,7 +264,8 @@ When approaching destination `s_dest`, if an incentive credit is offered to dive
       Completed Trips + Total Unmet Demand
     ```
   * *Station Starvation & Saturation Duration:* Total minutes spent at `B_i == 0` and `B_i == C_i`.
-  * *Average Commuter Detour:* Mean excess blocks walked per diverted rider.
+  * *Average Involuntary Detour:* Mean excess blocks cycled per rejected rider (excluding voluntary incentive diversions).
+  * *Average Excess Access Walk:* Mean extra blocks walked on foot by riders forced to use a 2nd/3rd station.
   * *Van Yield:* Repositioned bikes per block driven.
 
 ---
@@ -272,9 +290,10 @@ When approaching destination `s_dest`, if an incentive credit is offered to dive
 | **Cycling Speed** | `1` | Block / tick | ~15 km/h urban riding pace |
 | **Walking Speed** | `1 / 3` | Block / tick | 1 block per 3 minutes (~4.5 km/h) |
 | **Walking Radius Cutoff**| `3` | Blocks | Maximum access walking distance to origin dock (`R_walk`) |
-| **Max Detour Tolerance**| `2` | Blocks | Maximum detour walking accepted for incentives |
+| **Max Detour Tolerance**| `2` | Blocks | Maximum detour cycling accepted for incentives |
 | **Patience Threshold** | `5` | Minutes | Maximum wait at empty origin before balking |
-| **Objective Weight (Walk)**| `0.5` | Weight | `gamma_walk` penalty per excess detour block |
+| **Objective Weight (Access Walk)**| `0.5` | Weight | `gamma_access` penalty per excess access walk block |
+| **Objective Weight (Detour Bike)**| `0.5` | Weight | `gamma_detour` penalty per involuntary cycling detour block |
 | **Objective Weight (Wait)**| `0.2` | Weight | `gamma_wait` penalty per minute waiting at docks |
 | **Target Fill Ratio** | `0.50` | Ratio | 50% capacity target during rebalancing (`S_i*`) |
 | **Starvation Trigger** | `0.20` | Ratio | Low-inventory trigger (20% capacity) |
@@ -317,7 +336,7 @@ When approaching destination `s_dest`, if an incentive credit is offered to dive
   Generate commuter arrivals according to time-phased Poisson arrival rates per zone and sample trip destinations using diurnal origin-destination transition matrices for morning and evening peaks. Implement pre-trip app logic that checks stations with charged bikes within a 3-block walking radius, greedily selects the nearest valid origin dock, or logs an immediate app balk if no stations qualify.
 
 * **Step 5 - Commuter Trip Execution, Riding Kinetics & Detour Handling:**  
-  Model commuter progression from walking to unlocking a bike, cycling along road networks at 1 block/minute toward the destination dock, and handling destination saturation. If the target dock is full upon arrival, simulate detour walking to alternative nearby stations and log excess detour distance, wait times, and total unmet demand.
+  Model commuter progression from walking to unlocking a bike, cycling along road networks at 1 block/minute toward the destination dock, and handling destination saturation. If the target dock is full upon arrival, transition to `REROUTING_BIKING` to cycle to alternative nearby stations and log involuntary cycling detour distance (if rejected by a full dock), excess access walk distance, wait times, and total unmet demand.
 
 * **Step 6 - Economic Engine, OPEX Accounting & Shift Budget Enforcement:**  
   Implement real-time operational expenditure tracking accounting for van travel (`0.30 EUR/block`), bike handling labor (`0.12 EUR/bike`), and incentive payouts (`0.25 EUR/trip`). Enforce the strict 180.00 EUR shift budget ceiling, automatically returning vans to the depot `(16, 16)` and disabling incentive programs if the cap is reached.
